@@ -1,7 +1,12 @@
 // go 字符串记录相关
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"log"
+	"strings"
+	"unicode/utf8"
+)
 
 // go中字符串本质上就是字节序列
 // go官方专门在社区中发布博客来说明这个观点
@@ -55,5 +60,52 @@ func main() {
 	fmt.Println(len(str3))
 
 	// 拷贝
-	// 暂时到这里，今天接受的内容太多了，要消化下，晚上再看看
+	// 类似于拷贝数组也是使用copy内置函数
+	var dest, src string
+	src = "this is a string"
+	// copy(目标字符传切片，源头字符串)
+	destBytes := make([]byte, len(src))
+	copy(destBytes, src)
+	dest = string(destBytes)
+	fmt.Println(dest)
+	// 也可以使用strings包中的Clone函数
+	dest = strings.Clone(src)
+	fmt.Println(dest)
+
+	// 拼接
+	// 字符串拼接最简单就是 +
+	hello := "hello "
+	world := "world!"
+	s5 := hello + world
+	fmt.Println(s5)
+	// 也可以转换成字节切片
+	s5 = string(append([]byte(hello), []byte(world)...))
+	// 不过上述方式性能存在问题
+	// 使用strings的builder实现拼接
+	sb := strings.Builder{}
+	sb.WriteString(hello)
+	sb.WriteString(world)
+	fmt.Println(sb.String())
+
+	// 遍历
+	// 前面提到了字符串本质是字节序列
+	// 使用for循环遍历
+	// 遍历的是字节，打印的也是字节
+	for i := 0; i < len(s5); i++ {
+		log.Println(string(s5[i]))
+	}
+	// 使用for range迭代
+	// 这个做了处理，遍历的就是rune 也就是字符
+	// rune 前面的数据类型中说到了本质就是int32的别名
+	// go原生兼容utf8编码，一个utf8合法的字符最大也就4字节
+	for _, r := range "我是刻晴" {
+		log.Println(string(r))
+	}
+	// 还可以使用utf8包下的函数
+	str := "hello 世界!"
+	for i, w := 0, 0; i < len(str); i += w {
+		r, width := utf8.DecodeRuneInString(str[i:])
+		fmt.Println(string(r))
+		w = width
+	}
 }
