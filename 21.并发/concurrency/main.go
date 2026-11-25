@@ -4,8 +4,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -56,7 +58,7 @@ func main() {
 	fmt.Println("end")
 	// 上述代码中主协程没有等待子协程执行完毕后再退出
 	// 所以执行结果是不确定的，有时候子协程能执行完毕，有时候还没开始执行就退出了
-	// 而且顺序还是乱序，简单的处理使用time.Sleep等一会而，实际一般使用waitGroup
+	// 而且顺序还是乱序，简单的处理使用time.Sleep等一会而，实际一般使用wgGroup
 	//在go中常用的并发控制手段由三种：
 	// Channel：通道或者叫管道
 	// WaitGroup
@@ -214,8 +216,204 @@ func main() {
 	// emptyCtx 通常是用来当作最顶层的上下文，在创建其他三种上下文时作为父上下文传入
 
 	// valueCtx
-	context.WithValue(context.Background(), "name", "刻晴")
-	// 今天暂时到这里了
+	// 这里是展示如何通过WithValue函数创建
+	//【注意】valueCtx多用于在多级协程中传递一些数据，无法被取消
+	// 因此ctx.Done永远返回nil
+	valCtx := context.WithValue(context.Background(), "name", "刻晴")
+	fmt.Println(valCtx.Value("name"))
+
+	// cancelCtx
+	// 这个实现了canceler接口
+	// 一样的cancelCtx也不直接对外暴露而是通过WithCancel函数来创建
+	ctx, cancel := context.WithCancel(context.Background())
+	fmt.Println(ctx, cancel)
+	// ctx 是创建的上下文，cancel是一个函数用来取消该上下文
+	// 当调用cancel函数时，Done管道会关闭，该上下文的任何子级都会随之取消
+	wg.Add(1)
+	go func(ctx context.Context) {
+		defer wg.Done()
+		for {
+			select {
+			case <-ctx.Done():
+				// 收到Done管道数据直接打印关闭原因并退出循环
+				fmt.Println(ctx.Err()) // context canceled
+				return
+			default:
+				fmt.Println("等待取消中...")
+			}
+			time.Sleep(time.Millisecond * 200)
+		}
+	}(ctx)
+	time.Sleep(time.Second)
+	cancel()
+	wg.Wait()
+
+	// timerCtx
+	// timerCtx其实就是在cancelCtx上增加超时机制，超时会自动取消
+	ctx1, cancel1 := context.WithTimeout(context.Background(), time.Second*2)
+	fmt.Println(ctx1, cancel1)
+	// 同样的这个会创建context和取消函数，不过就算不手动取消，超时也会自动取消
+	// 当然保险起见也可以手动调用cancel1函数，常见是配合defer延迟调用使用
+	wg.Go(func() {
+		for {
+			select {
+			case <-ctx1.Done():
+				fmt.Println(ctx1.Err()) // context deadline exceeded
+				return
+			default:
+				fmt.Println("等待超时...")
+			}
+			time.Sleep(time.Millisecond * 200)
+		}
+	})
+	wg.Wait()
+	// 除了使用WithTimeout，也可以使用WithDeadline
+
+	// =========Select==========
+	// 前面提到过Select使用来监听管道的，语法上和Switch有点像
+	// Select可以监听多个管道，做不同的处理
+	chA := make(chan int, 10)
+	chB := make(chan int, 10)
+	chC := make(chan int, 10)
+	defer func() {
+		close(chA)
+		close(chB)
+		close(chC)
+	}()
+
+	select {
+	case <-chA:
+		fmt.Println("处理管道A")
+	case <-chB:
+		fmt.Println("处理管道B")
+	case <-chC:
+		fmt.Println("处理管道C")
+	default:
+		fmt.Println("默认操作")
+	}
+
+	select {
+	//case里面也可以向管道里面写入数据
+	case chA <- 10:
+		fmt.Println(<-chA)
+	default: // 添加这个就不会阻塞
+	}
+
+	// 还可以实现超时机制
+	select {
+	case n := <-chA:
+		fmt.Println(n)
+	case <-time.After(time.Second):
+		fmt.Println("超时")
+	}
+
+	// 如果你经常看源码，你会发现select经常会结合for{}循环使用
+
+	// 永久阻塞，上述所说如果没有default，且监听的管道都没有数据来，就会阻塞
+	// 想要不阻塞就结合使用超时机制
+
+	// =========互斥锁==========
+	// 前面说到管道中的通信，本质是CSP（通信顺序进程）的理论实践
+	// 但是不是说所有的操作都是依靠管道实现，对于协程之间的通信，使用管道很适用
+	// 但是对于共享资源的保护，使用互斥锁更好
+	count := 0
+
+	go func() {
+		for range 10 {
+			count++
+		}
+	}()
+
+	go func() {
+		for range 7 {
+			count--
+		}
+	}()
+	time.Sleep(time.Millisecond)
+	fmt.Println("count", count)
+	// 当你执行上述代码的时候，按理说你想的结果是3
+	// 但是实际上4，6都有可能，因为资源竞争了，上述自增和自减操作都不是原子性的
+	// 当一个协程准备加操作的时候，另一个协程进行了减操作，对方都不知道对方已经操作了
+	// 导致结果是不可预期的，这种情况如果使用管道，效果不是很好，但是使用互斥锁
+	// 将资源保护起来，每次加的时候就不能减，减的时候就不能加，让操作变得原子性
+
+	count1 := 0
+	var lock sync.Mutex
+
+	go func() {
+		for range 10 {
+			lock.Lock()
+			count1++
+			lock.Unlock()
+		}
+	}()
+
+	go func() {
+		for range 7 {
+			lock.Lock()
+			count1--
+			lock.Unlock()
+		}
+	}()
+	time.Sleep(time.Millisecond)
+	fmt.Println("count1", count1)
+
+	// 其实锁这个可说的没有多少，和其他编程语言的用法基本一致
+	// 不过在go中的互斥锁是不可重入锁，提供了普通互斥锁和读写互斥锁
+	// 具体的自行了解
+	//【注意】对于锁而言，不应该将其作为值传递和存储，应该使用指针
+
+	// =========条件变量=========
+	// 条件边聊，与互斥锁一同出现和使用，所以有些人可能会误称为条件所
+	// 但是它不是锁，是一种通讯机制，go中的sync.Cond对此提供了实现
+	// 创建的条件的函数签名如下
+	// func NewCond(l Locker) *Cond
+	// 可以看到创建条件变量的前提是要有一把锁
+	// 提供Wait Signal Broadcast 几个方法
+	// 例子我不写在main函数里面了，在函数CondDemo1()中
+	CondDemo1()
+	//【注意】对于条件变量，应该使用for而不是if，应该使用循环来判断条件是否满足
+	// 因为协程被唤醒时并不保证当前条件就已经满足了
+	// for !condition {
+	// 	cond.Wait()
+	// }
+
+	// ==========sync==========
+	// go中很大部分的并发相关的工具都是sync标准库提供的，上面已经说过了
+	// sync.WaitGroup,sync.Locker,除此之外还有些常用的，下面一起介绍
+
+	// Once
+	// 当使用一些二数据结构时，如果这些数据结构体太过于庞大，就可以使用Once
+	// 这是一个中懒加载的模式，只会在使用的时候才会初始化该数据结构体
+	// 这种结构很常见，例如
+	// func() {
+	// 	if *m == nil { // 使用的时候才会初始化
+	// 		*m = make([]int, 0, 10)
+	// 	}
+	// 	*m = append(*m, i)
+	// }()
+	// 但是有问题是吧，多协程的时候就有问题，
+	// 不然的话协程A初始化了，但是还没完成，这时候协程B来了，它的速度开立马就初始化了
+	// 最后会怎样，B的把A给覆盖了，在java中一般使用锁关键字双重检定
+	// 但是在go中呢，其实提供了一个sync.Once来解决这个问题
+	// Once顾名思义就是一次，只初始化一次，对外只暴露一个方法Do
+	// 例子在OnceDemo1()函数
+	OnceDemo1()
+
+	// Pool
+	// sync.Pool的设计目的时用于存储临时对象以便后续的复用
+	// 是一个临时的并发安全对象池，将暂时用不到的对象临时存在对象池中
+	// 在后续使用就不需要再额外的创建对象，直接在池中取对象复用就行
+	// 减少内存的分配与释放频率，降低GC压力
+	// 这个场景在游戏开发中很常见，对象复用，避免频繁创建
+	// sync.Pool中总共只有两个方法
+	// 申请一个对象
+	// func (p *Pool) Get() any
+	// 放入一个对象
+	// func (p *Pool) Put(x any)
+	// 并且sync.Pool有一个对外暴露的New字段
+	// 示例在PoolDemo1()函数中
+	PoolDemo1()
 }
 
 func hello() {
@@ -430,4 +628,153 @@ func WGDemo2() {
 	// 阻塞主协程
 	mwg.Wait()
 	fmt.Println("end")
+}
+
+var (
+	wg sync.WaitGroup
+	rw sync.RWMutex
+)
+
+var count = 0
+
+// 创建条件变量
+var cond = sync.NewCond(rw.RLocker())
+
+// 条件变量的示例函数
+func CondDemo1() {
+	wg.Add(12)
+	// 读多写少
+	go func() {
+		for range 3 {
+			go Write(&count)
+		}
+		wg.Done()
+	}()
+
+	go func() {
+		for range 7 {
+			go Read(&count)
+		}
+		wg.Done()
+	}()
+
+	wg.Wait()
+	fmt.Println("最终结果", count)
+
+}
+
+func Read(i *int) {
+	time.Sleep(time.Millisecond * time.Duration(rand.Intn(500)))
+	rw.RLock()
+	fmt.Println("拿到读锁")
+	// 条件不满足就一直阻塞
+	for *i < 3 {
+		cond.Wait()
+	}
+	time.Sleep(time.Millisecond * time.Duration(rand.Intn(1000)))
+	fmt.Println("释放读锁", *i)
+	rw.RUnlock()
+	wg.Done()
+}
+
+func Write(i *int) {
+	time.Sleep(time.Millisecond * time.Duration(rand.Intn(1000)))
+	rw.Lock()
+	fmt.Println("拿到写锁")
+	temp := *i
+	time.Sleep(time.Millisecond * time.Duration(rand.Intn(1000)))
+	*i = temp + 1
+	fmt.Println("释放写锁", *i)
+	rw.Unlock()
+	// 唤醒所有因条件变量阻塞的协程
+	cond.Broadcast()
+	wg.Done()
+}
+
+var wait sync.WaitGroup
+
+// Once示例函数
+func OnceDemo1() {
+	var slice MySlice
+	wait.Add(4)
+	for range 4 {
+		go func() {
+			slice.Add(1)
+			wait.Done()
+		}()
+	}
+	wait.Wait()
+	fmt.Println(slice.Len())
+}
+
+type MySlice struct {
+	s []int
+	o sync.Once
+}
+
+func (m *MySlice) Get(i int) (int, bool) {
+	if m.s == nil {
+		return 0, false
+	} else {
+		return m.s[i], true
+	}
+}
+
+func (m *MySlice) Add(i int) {
+	// 当真正用到切片的时候，才会考虑去初始化
+	m.o.Do(func() {
+		fmt.Println("初始化")
+		if m.s == nil {
+			m.s = make([]int, 0, 10)
+		}
+	})
+	m.s = append(m.s, i)
+}
+
+func (m *MySlice) Len() int {
+	return len(m.s)
+}
+
+// 创建临时对象池
+var pool sync.Pool
+
+// 用于计数创建了多少个对象
+var numOfObject atomic.Int64
+
+// 大结构体
+type BigMemData struct {
+	M string
+	N string
+}
+
+// Pool示例函数
+func PoolDemo1() {
+	pool.New = func() any {
+		numOfObject.Add(1)
+		return BigMemData{"刻晴", "兹白"}
+	}
+
+	// 开启100_000个协程
+	for range 100_000 {
+		wait.Go(func() {
+			val := pool.Get()
+			//【注意】中间的操作如果IO时间长，创建的对象也会很多
+			// 难以实现复用效果
+			if _, ok := val.(BigMemData); ok {
+				// 这个打印就是耗时较长的IO
+				// 如果耗时过于长，这个就会退化成一个协程创建一个对象了
+				// fmt.Println(v.M, v.N)
+			}
+			// 释放对象
+			pool.Put(val)
+		})
+	}
+	wait.Wait()
+	fmt.Println("对象数量", numOfObject.Load())
+	// 这里如果不是使用pool复用，100_000个协程每个协程都要创建一个对象
+	// 那么就是100_000个GC的压力直接拉爆，但是现在你看打印反正比100_000少
+	// 临时对象：sync.Pool 只适合存放临时对象，池中的对象可能会在没有任何通知的情况下被 GC 移除，所以并不建议将网络链接，数据库连接这类存入 sync.Pool 中。
+	// 不可预知：sync.Pool 在申请对象时，无法预知这个对象是新创建的还是复用的，也无法知晓池中有几个对象
+	// 并发安全：官方保证 sync.Pool 一定是并发安全，但并不保证用于创建对象的 New 函数就一定是并发安全的，
+	// New 函数是由使用者传入的，所以 New 函数的并发安全性要由使用者自己来维护，这也是为什么上例中对象计数要用到原子值的原因。
 }
