@@ -1,6 +1,9 @@
 package demo
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 func Hello() {
 	fmt.Println("hello 兹白")
@@ -37,4 +40,18 @@ func Equal[T Number](a, b T) bool {
 		return true
 	}
 	return false
+}
+
+func ConcatStringDirect(longString string) {
+	res := ""
+	for range int(100_000.) {
+		res += longString
+	}
+}
+
+func ConcatStringWithBuilder(longString string) {
+	var res strings.Builder
+	for range int(100_000.) {
+		res.WriteString(longString)
+	}
 }

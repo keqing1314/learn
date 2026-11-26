@@ -53,4 +53,21 @@ func TestEqusl(t *testing.T) {
 }
 
 // 子测试
-// 一些情况下会使用到
+// 一些情况下会在一个测试用例中引入另一个测试用例
+// 这种嵌套的关系就被称为子测试。通过t.Run()方法
+func TestDemo(t *testing.T) {
+	t.Run("demo.Sum(10,101)", TestSum)
+	t.Run("demo.Equal(11,111)", TestEqusl)
+}
+
+// 执行结果如下
+// === RUN   TestDemo
+// === RUN   TestDemo/demo.Sum(10,101)
+//     unit_test.go:28: test finished
+// === RUN   TestDemo/demo.Equal(11,111)
+//     unit_test.go:43: test finished
+// --- PASS: TestDemo (0.00s)
+//     --- PASS: TestDemo/demo.Sum(10,101) (0.00s)
+//     --- PASS: TestDemo/demo.Equal(11,111) (0.00s)
+// PASS
+// ok      learn/test/test 0.476s
